@@ -4,3 +4,22 @@ services:
     container_name: ridesharing-userver-api
     ports:
       - "8080:8080"
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16
+    container_name: ridesharing-postgres
+    environment:
+      POSTGRES_DB: ridesharing_db
+      POSTGRES_USER: ridesharing_user
+      POSTGRES_PASSWORD: ridesharing_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./sql/data.sql:/docker-entrypoint-initdb.d/02_data.sql
+
+volumes:
+  postgres_data:
