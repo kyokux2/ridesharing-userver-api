@@ -1,0 +1,6 @@
+services:
+  ridesharing-api:
+    build: .
+    container_name: ridesharing-userver-api
+    ports:
+      - "8080:8080"

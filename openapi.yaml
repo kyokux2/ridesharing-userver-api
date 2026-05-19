@@ -1,0 +1,444 @@
+openapi: 3.0.3
+info:
+  title: RideSharing REST API
+  description: REST API сервис поиска попутчиков. Вариант 7 по курсу "Архитектура программных систем".
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local Docker server
+
+tags:
+  - name: Health
+    description: Проверка работоспособности сервиса
+  - name: Auth
+    description: Регистрация и вход пользователя
+  - name: Users
+    description: Работа с пользователями
+  - name: Routes
+    description: Работа с маршрутами
+  - name: Trips
+    description: Работа с поездками
+
+paths:
+  /ping:
+    get:
+      tags: [Health]
+      summary: Проверка состояния сервиса
+      responses:
+        "200":
+          description: Сервис работает
+          content:
+            application/json:
+              example:
+                status: ok
+                service: ridesharing-userver
+                variant: 7
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Создание нового пользователя
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              login: driver
+              password: "123456"
+              first_name: Ivan
+              last_name: Petrov
+      responses:
+        "201":
+          description: Пользователь успешно создан
+          content:
+            application/json:
+              example:
+                user:
+                  id: 1
+                  login: driver
+                  first_name: Ivan
+                  last_name: Petrov
+                message: user registered successfully
+        "400":
+          description: Некорректное тело запроса
+        "409":
+          description: Пользователь с таким login уже существует
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Авторизация пользователя
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              login: driver
+              password: "123456"
+      responses:
+        "200":
+          description: Успешная авторизация
+          content:
+            application/json:
+              example:
+                access_token: token-1-driver
+                token_type: Bearer
+                user:
+                  id: 1
+                  login: driver
+                  first_name: Ivan
+                  last_name: Petrov
+        "400":
+          description: Некорректное тело запроса
+        "401":
+          description: Неверный login или password
+
+  /api/v1/users/by-login/{login}:
+    get:
+      tags: [Users]
+      summary: Поиск пользователя по login
+      parameters:
+        - name: login
+          in: path
+          required: true
+          schema:
+            type: string
+          example: driver
+      responses:
+        "200":
+          description: Пользователь найден
+          content:
+            application/json:
+              example:
+                user:
+                  id: 1
+                  login: driver
+                  first_name: Ivan
+                  last_name: Petrov
+        "404":
+          description: Пользователь не найден
+
+  /api/v1/users/search:
+    get:
+      tags: [Users]
+      summary: Поиск пользователя по маске имени и фамилии
+      parameters:
+        - name: first_name
+          in: query
+          required: false
+          schema:
+            type: string
+          example: Iv
+        - name: last_name
+          in: query
+          required: false
+          schema:
+            type: string
+          example: Pet
+      responses:
+        "200":
+          description: Список пользователей
+          content:
+            application/json:
+              example:
+                users:
+                  - id: 1
+                    login: driver
+                    first_name: Ivan
+                    last_name: Petrov
+
+  /api/v1/routes:
+    post:
+      tags: [Routes]
+      summary: Создание маршрута
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRouteRequest"
+            example:
+              user_id: 1
+              from_city: Moscow
+              to_city: Tver
+              distance_km: 180
+      responses:
+        "201":
+          description: Маршрут создан
+          content:
+            application/json:
+              example:
+                route:
+                  id: 1
+                  user_id: 1
+                  from_city: Moscow
+                  to_city: Tver
+                  distance_km: 180
+                message: route created successfully
+        "400":
+          description: Некорректные данные
+        "401":
+          description: Отсутствует или неверный токен
+        "404":
+          description: Пользователь не найден
+
+  /api/v1/users/{user_id}/routes:
+    get:
+      tags: [Routes]
+      summary: Получение маршрутов пользователя
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1
+      responses:
+        "200":
+          description: Список маршрутов пользователя
+          content:
+            application/json:
+              example:
+                routes:
+                  - id: 1
+                    user_id: 1
+                    from_city: Moscow
+                    to_city: Tver
+                    distance_km: 180
+        "400":
+          description: Некорректный user_id
+        "404":
+          description: Пользователь не найден
+
+  /api/v1/trips:
+    post:
+      tags: [Trips]
+      summary: Создание поездки
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTripRequest"
+            example:
+              driver_id: 1
+              route_id: 1
+              departure_time: "2026-05-20T10:00:00"
+              available_seats: 3
+              price: 1200
+      responses:
+        "201":
+          description: Поездка создана
+          content:
+            application/json:
+              example:
+                trip:
+                  id: 1
+                  driver_id: 1
+                  route_id: 1
+                  departure_time: "2026-05-20T10:00:00"
+                  available_seats: 3
+                  price: 1200
+                  passenger_ids: []
+                message: trip created successfully
+        "400":
+          description: Некорректные данные
+        "401":
+          description: Отсутствует или неверный токен
+        "404":
+          description: Водитель или маршрут не найден
+
+  /api/v1/trips/{trip_id}/join:
+    post:
+      tags: [Trips]
+      summary: Подключение пользователя к поездке
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinTripRequest"
+            example:
+              user_id: 2
+      responses:
+        "200":
+          description: Пользователь подключен к поездке
+          content:
+            application/json:
+              example:
+                trip:
+                  id: 1
+                  driver_id: 1
+                  route_id: 1
+                  departure_time: "2026-05-20T10:00:00"
+                  available_seats: 2
+                  price: 1200
+                  passenger_ids: [2]
+                message: user joined trip successfully
+        "400":
+          description: Некорректные данные
+        "401":
+          description: Отсутствует или неверный токен
+        "404":
+          description: Пользователь или поездка не найдены
+        "409":
+          description: Пользователь уже подключен или нет свободных мест
+
+  /api/v1/trips/{trip_id}:
+    get:
+      tags: [Trips]
+      summary: Получение информации о поездке
+      parameters:
+        - name: trip_id
+          in: path
+          required: true
+          schema:
+            type: integer
+          example: 1
+      responses:
+        "200":
+          description: Информация о поездке
+          content:
+            application/json:
+              example:
+                trip:
+                  id: 1
+                  driver_id: 1
+                  route_id: 1
+                  departure_time: "2026-05-20T10:00:00"
+                  available_seats: 2
+                  price: 1200
+                  passenger_ids: [2]
+        "400":
+          description: Некорректный trip_id
+        "404":
+          description: Поездка не найдена
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [login, password, first_name, last_name]
+      properties:
+        login:
+          type: string
+        password:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login:
+          type: string
+        password:
+          type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        login:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+
+    CreateRouteRequest:
+      type: object
+      required: [user_id, from_city, to_city, distance_km]
+      properties:
+        user_id:
+          type: integer
+        from_city:
+          type: string
+        to_city:
+          type: string
+        distance_km:
+          type: integer
+
+    Route:
+      type: object
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        from_city:
+          type: string
+        to_city:
+          type: string
+        distance_km:
+          type: integer
+
+    CreateTripRequest:
+      type: object
+      required: [driver_id, route_id, departure_time, available_seats, price]
+      properties:
+        driver_id:
+          type: integer
+        route_id:
+          type: integer
+        departure_time:
+          type: string
+          example: "2026-05-20T10:00:00"
+        available_seats:
+          type: integer
+        price:
+          type: integer
+
+    JoinTripRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: integer
+
+    Trip:
+      type: object
+      properties:
+        id:
+          type: integer
+        driver_id:
+          type: integer
+        route_id:
+          type: integer
+        departure_time:
+          type: string
+        available_seats:
+          type: integer
+        price:
+          type: integer
+        passenger_ids:
+          type: array
+          items:
+            type: integer
