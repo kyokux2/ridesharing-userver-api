@@ -8,6 +8,7 @@ services:
       - postgres
       - mongo
       - redis
+      - rabbitmq
 
   postgres:
     image: postgres:16
@@ -37,6 +38,16 @@ services:
     container_name: ridesharing-redis
     ports:
       - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ridesharing-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ridesharing
+      RABBITMQ_DEFAULT_PASS: ridesharing_password
 
 volumes:
   postgres_data:
