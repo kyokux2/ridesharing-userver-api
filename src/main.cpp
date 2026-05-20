@@ -3,6 +3,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <chrono>
+#include <unordered_map>
+#include <optional>
 
 #include <userver/components/minimal_server_component_list.hpp>
 #include <userver/formats/json.hpp>
@@ -10,6 +13,7 @@
 #include <userver/server/handlers/http_handler_base.hpp>
 #include <userver/server/http/http_status.hpp>
 #include <userver/utils/daemon_run.hpp>
+
 
 namespace ridesharing {
 
@@ -46,6 +50,25 @@ std::mutex g_mutex;
 std::vector<User> g_users;
 std::vector<Route> g_routes;
 std::vector<Trip> g_trips;
+
+using Clock = std::chrono::steady_clock;
+
+struct CacheEntry {
+    std::string value;
+    Clock::time_point expires_at;
+};
+
+struct RateLimitEntry {
+    int count;
+    Clock::time_point reset_at;
+};
+
+std::unordered_map<std::string, CacheEntry> g_cache;
+std::unordered_map<std::string, RateLimitEntry> g_rate_limits;
+
+int g_cache_hits = 0;
+int g_cache_misses = 0;
+int g_rate_limited_requests = 0;
 
 int g_next_user_id = 1;
 int g_next_route_id = 1;
@@ -134,6 +157,69 @@ bool RouteExists(int route_id) {
             return route.id == route_id;
         }
     );
+    
+}
+
+std::optional<std::string> GetFromCache(const std::string& key) {
+    const auto now = Clock::now();
+
+    auto it = g_cache.find(key);
+    if (it == g_cache.end()) {
+        g_cache_misses++;
+        return std::nullopt;
+    }
+
+    if (it->second.expires_at <= now) {
+        g_cache.erase(it);
+        g_cache_misses++;
+        return std::nullopt;
+    }
+
+    g_cache_hits++;
+    return it->second.value;
+}
+
+void SetCache(const std::string& key, const std::string& value, int ttl_seconds) {
+    g_cache[key] = CacheEntry{
+        value,
+        Clock::now() + std::chrono::seconds(ttl_seconds)
+    };
+}
+
+void InvalidateCache(const std::string& key) {
+    g_cache.erase(key);
+}
+bool CheckRateLimit(
+    const userver::server::http::HttpRequest& request,
+    const std::string& key,
+    int limit,
+    int window_seconds
+) {
+    const auto now = Clock::now();
+
+    auto& entry = g_rate_limits[key];
+
+    if (entry.reset_at <= now) {
+        entry.count = 0;
+        entry.reset_at = now + std::chrono::seconds(window_seconds);
+    }
+
+    entry.count++;
+
+    const int remaining = std::max(0, limit - entry.count);
+    const auto reset_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+        entry.reset_at - now
+    ).count();
+
+    request.GetHttpResponse().SetHeader(std::string("X-RateLimit-Limit"), std::to_string(limit));
+request.GetHttpResponse().SetHeader(std::string("X-RateLimit-Remaining"), std::to_string(remaining));
+request.GetHttpResponse().SetHeader(std::string("X-RateLimit-Reset"), std::to_string(reset_seconds));
+    if (entry.count > limit) {
+        g_rate_limited_requests++;
+        return false;
+    }
+
+    return true;
 }
 
 bool IsAuthorized(const userver::server::http::HttpRequest& request) {
@@ -185,6 +271,19 @@ public:
         const userver::server::http::HttpRequest& request,
         userver::server::request::RequestContext&
     ) const override {
+                {
+            std::lock_guard<std::mutex> lock(g_mutex);
+
+            const std::string rate_key = "rate:login:global";
+
+            if (!CheckRateLimit(request, rate_key, 5, 60)) {
+                return BuildError(
+                    request,
+                    userver::server::http::HttpStatus::kTooManyRequests,
+                    "rate limit exceeded"
+                );
+            }
+        }
         try {
             const auto body = userver::formats::json::FromString(request.RequestBody());
 
@@ -243,6 +342,20 @@ public:
         const userver::server::http::HttpRequest& request,
         userver::server::request::RequestContext&
     ) const override {
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+
+            const std::string rate_key = "rate:login:global";
+
+            if (!CheckRateLimit(request, rate_key, 5, 60)) {
+                return BuildError(
+                    request,
+                    userver::server::http::HttpStatus::kTooManyRequests,
+                    "rate limit exceeded"
+                );
+            }
+        }
+
         try {
             const auto body = userver::formats::json::FromString(request.RequestBody());
 
@@ -264,11 +377,17 @@ public:
                 }
             }
 
-            return BuildError(request, userver::server::http::HttpStatus::kUnauthorized,
-                              "invalid login or password");
+            return BuildError(
+                request,
+                userver::server::http::HttpStatus::kUnauthorized,
+                "invalid login or password"
+            );
         } catch (const std::exception&) {
-            return BuildError(request, userver::server::http::HttpStatus::kBadRequest,
-                              "invalid request body");
+            return BuildError(
+                request,
+                userver::server::http::HttpStatus::kBadRequest,
+                "invalid request body"
+            );
         }
     }
 };
@@ -283,8 +402,19 @@ public:
         userver::server::request::RequestContext&
     ) const override {
         const auto login = request.GetPathArg("login");
+        const std::string cache_key = "user:login:" + std::string(login);
 
         std::lock_guard<std::mutex> lock(g_mutex);
+
+        // 1. Primero intentamos leer desde caché
+        if (const auto cached = GetFromCache(cache_key)) {
+            request.GetHttpResponse().SetHeader(std::string("X-Cache"), std::string("HIT"));
+            SetJsonContentType(request);
+            return *cached;
+        }
+
+        // 2. Si no está en caché, buscamos en storage
+        request.GetHttpResponse().SetHeader(std::string("X-Cache"), std::string("MISS"));
 
         for (const auto& user : g_users) {
             if (user.login == login) {
@@ -293,7 +423,12 @@ public:
                 userver::formats::json::ValueBuilder response;
                 response["user"] = BuildUserJson(user);
 
-                return userver::formats::json::ToString(response.ExtractValue());
+                const auto result = userver::formats::json::ToString(response.ExtractValue());
+
+                // 3. Guardamos en caché por 300 segundos
+                SetCache(cache_key, result, 300);
+
+                return result;
             }
         }
 
@@ -562,6 +697,7 @@ public:
 
                     trip.passenger_ids.push_back(user_id);
                     trip.available_seats--;
+                    InvalidateCache("trip:" + std::to_string(trip.id));
 
                     SetJsonContentType(request);
 
@@ -593,8 +729,19 @@ public:
     ) const override {
         try {
             const int trip_id = std::stoi(std::string(request.GetPathArg("trip_id")));
+            const std::string cache_key = "trip:" + std::to_string(trip_id);
 
             std::lock_guard<std::mutex> lock(g_mutex);
+
+            // 1. Проверяем кеш
+            if (const auto cached = GetFromCache(cache_key)) {
+                request.GetHttpResponse().SetHeader(std::string("X-Cache"), std::string("HIT"));
+                SetJsonContentType(request);
+                return *cached;
+            }
+
+            // 2. Если в кеше нет — ищем в памяти
+            request.GetHttpResponse().SetHeader(std::string("X-Cache"), std::string("MISS"));
 
             for (const auto& trip : g_trips) {
                 if (trip.id == trip_id) {
@@ -603,15 +750,26 @@ public:
                     userver::formats::json::ValueBuilder response;
                     response["trip"] = BuildTripJson(trip);
 
-                    return userver::formats::json::ToString(response.ExtractValue());
+                    const auto result = userver::formats::json::ToString(response.ExtractValue());
+
+                    // 3. Сохраняем в кеш на 30 секунд
+                    SetCache(cache_key, result, 30);
+
+                    return result;
                 }
             }
 
-            return BuildError(request, userver::server::http::HttpStatus::kNotFound,
-                              "trip not found");
+            return BuildError(
+                request,
+                userver::server::http::HttpStatus::kNotFound,
+                "trip not found"
+            );
         } catch (const std::exception&) {
-            return BuildError(request, userver::server::http::HttpStatus::kBadRequest,
-                              "invalid trip_id");
+            return BuildError(
+                request,
+                userver::server::http::HttpStatus::kBadRequest,
+                "invalid trip_id"
+            );
         }
     }
 };

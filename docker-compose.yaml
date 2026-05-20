@@ -7,6 +7,7 @@ services:
     depends_on:
       - postgres
       - mongo
+      - redis
 
   postgres:
     image: postgres:16
@@ -30,6 +31,12 @@ services:
     volumes:
       - mongo_data:/data/db
       - ./mongo/data.js:/docker-entrypoint-initdb.d/01_data.js:ro
+
+  redis:
+    image: redis:7
+    container_name: ridesharing-redis
+    ports:
+      - "6379:6379"
 
 volumes:
   postgres_data:

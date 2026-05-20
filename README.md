@@ -419,4 +419,155 @@ mongo/
 ├── data.js
 ├── queries.js
 └── validation.js
-In schema_design.md is all explain
+In schema_design.md is all explaine
+
+======================================================================================================================================================================================
+
+
+# Домашнее задание 05: Кеширование и Rate Limiting
+
+## Цель работы
+
+Цель домашнего задания — проанализировать производительность сервиса поиска попутчиков, определить hot paths, спроектировать стратегию кеширования, реализовать кеширование для read endpoints и добавить rate limiting для защиты API.
+
+## Реализованные оптимизации
+
+В проекте реализованы:
+
+- in-memory caching для двух endpoints;
+- rate limiting для endpoint авторизации;
+- Redis в Docker Compose как инфраструктурный сервис для кеширования;
+- HTTP headers для анализа кеша и лимитов;
+- документ `performance_design.md` с описанием стратегии.
+
+## Кеширование
+
+Кеширование реализовано для endpoints:
+
+```http
+GET /api/v1/users/by-login/{login}
+GET /api/v1/trips/{trip_id}
+
+Для ответа из кеша используется header:
+
+X-Cache: HIT
+
+Если данных не было в кеше:
+
+X-Cache: MISS
+TTL
+Endpoint	Cache key	TTL
+GET /api/v1/users/by-login/{login}	user:login:{login}	300 секунд
+GET /api/v1/trips/{trip_id}	trip:{trip_id}	30 секунд
+Инвалидация кеша
+
+При подключении пользователя к поездке:
+
+POST /api/v1/trips/{trip_id}/join
+
+инвалидируется ключ:
+
+trip:{trip_id}
+
+Это нужно, потому что после подключения пассажира меняются:
+
+список пассажиров;
+количество свободных мест.
+Rate Limiting
+
+Rate limiting реализован для endpoint:
+
+POST /api/v1/auth/login
+
+Используется алгоритм:
+
+Fixed Window Counter
+
+Лимит:
+
+5 запросов в минуту
+
+При превышении лимита API возвращает:
+
+429 Too Many Requests
+
+Пример ответа:
+
+{
+  "error": "rate limit exceeded"
+}
+
+Также добавляются headers:
+
+X-RateLimit-Limit: 5
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 60
+Redis
+
+Redis добавлен в docker-compose.yaml как отдельный сервис:
+
+redis:
+  image: redis:7
+  container_name: ridesharing-redis
+  ports:
+    - "6379:6379"
+
+Проверка Redis:
+
+docker exec -it ridesharing-redis redis-cli ping
+
+Ожидаемый ответ:
+
+PONG
+Проверка кеширования
+
+Сначала зарегистрировать пользователя:
+
+curl -X POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"login":"driver","password":"123456","first_name":"Ivan","last_name":"Petrov"}'
+
+Первый запрос:
+
+curl -i http://localhost:8080/api/v1/users/by-login/driver
+
+Ожидаемый header:
+
+X-Cache: MISS
+
+Повторный запрос:
+
+curl -i http://localhost:8080/api/v1/users/by-login/driver
+
+Ожидаемый header:
+
+X-Cache: HIT
+Проверка rate limiting
+for i in {1..6}; do
+  curl -i -X POST http://localhost:8080/api/v1/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"login":"driver","password":"123456"}'
+  echo "\n------"
+done
+
+Ожидаемый результат:
+
+1-5 запросы: 200 OK
+6 запрос: 429 Too Many Requests
+Метрики производительности
+
+Для мониторинга эффективности можно использовать:
+
+cache hit rate;
+cache miss rate;
+average response time;
+p95 latency;
+p99 latency;
+requests per second;
+DB queries per second;
+Redis memory usage;
+rate limited requests;
+error rate.
+Вывод
+
+Кеширование уменьшает количество повторных обращений к базе данных и ускоряет read endpoints. Rate limiting защищает endpoint авторизации от brute force и снижает риск перегрузки API.
