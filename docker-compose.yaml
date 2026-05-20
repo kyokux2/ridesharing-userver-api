@@ -6,6 +6,7 @@ services:
       - "8080:8080"
     depends_on:
       - postgres
+      - mongo
 
   postgres:
     image: postgres:16
@@ -21,5 +22,15 @@ services:
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
       - ./sql/data.sql:/docker-entrypoint-initdb.d/02_data.sql
 
+  mongo:
+    image: mongo:7
+    container_name: ridesharing-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo/data.js:/docker-entrypoint-initdb.d/01_data.js:ro
+
 volumes:
   postgres_data:
+  mongo_data:
